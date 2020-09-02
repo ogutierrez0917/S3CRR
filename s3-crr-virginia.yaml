@@ -1,0 +1,163 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: This template will create the resources needed in Virginia Region
+
+Resources:
+  #CMK Key for S3 encryption in Virginia region
+  MyKey: 
+    Type: AWS::KMS:KEY
+    Properties: 
+    Description: This is a CMK key for encrypt my S3 bucket
+    Enabled: True
+    EnabledKeyRotation: True
+    KeyPolicy: 
+      Id: my_test_key
+      Version: ‘2012-10-17’
+      Statement:
+      -	Sid: Enable IAM User Permissions
+        Effect: Allow
+        Principal:
+          AWS:
+          - Fn::Join:
+            - “:”
+          – - ‘arn:aws:iam:’
+          - Ref: AWS::AccountId
+          - Root
+        Action: kms:*
+        Resource: “*”
+    Tags:
+    - Key: Name
+      Value: Test_Key
+
+  #Role which allows replication to S3 service
+  ReplicationRole: 
+    Type: AWS::IAM:Role
+    Properties:
+      RoleName: my-replication-test-role
+      Description: Role to give replication permissions to S3
+      AssumeRolePolicyDocument: 
+        Version: '2012-10-17'
+        Statement: 
+        - Effect: Allow
+          Action:
+            - 'sts:AssumeRole'
+          Principal:
+            Service:
+              - s3.amazonaws.com
+      Path: /
+      ManagedPolicyArns:
+        - !Ref ReplicationRolePolicy
+
+  #Policy for Replication Role
+  ReplicatonRolePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: AllowDecrypt
+          Effect: Allow
+          Action: 
+            - kms:Decrypt
+          Condition:
+            StringLike:
+              kms:ViaService: s3.us-east-1.amazonaws.com
+              kms:EncryptionContext:aws:s3:arn:
+                - arn:aws:s3:::my-test-bucket/*
+          Resource:
+            - !Ref MyKey
+        - Sid: AllowEncrypt
+          Effect: Allow
+          Action: 
+            - kms:Encrypt
+          Condition:
+            StringLike:
+              kms:ViaService: s3.us-east-1.amazonaws.com
+              kms:EncryptionContext:aws:s3:arn:
+                - !Ref arn:aws:s3:::my-test-bucket-ohio-replication/*
+          Resource:
+            - arn:aws:kms:us-east-2:accountID:key/MyKeyOhioID
+        - Sid: AllowReadAccess
+          Effect: Allow
+          Action: 
+            - s3:GetReplicationConfiguration
+            - s3:ListBuckets
+          Resource:
+            - !Ref MyTestBucketVirginia
+        - Sid: AllowingWrite
+          Effect: Allow
+          Action: 
+            - s3:GetObjectVersion
+            - s3:GetObjectVersionAcl
+            - s3:GetObjectVersionTagging
+          Resource:
+            - !Ref MyTestBucketVirginia
+        - Sid: AllowingReplication
+          Effect: Allow
+          Action: 
+            - s3:ReplicateObject
+            - s3:ReplicateDelete
+            - s3:ReplicateTags
+          Resource:
+            - !Ref MyTestBucketVirginia
+  
+  #S3 Bucket
+  MyTestBucketVirginia:
+    Type: AWS::S3::Bucket
+      Properties:
+        BucketName: my-test-bucket-virginia
+        AccessControl: LogDeliveryWrite
+        BucketEncryption:
+          ServerSideEncryptionConfiguration:
+            - ServerSideEncryptionByDefault:
+                KMSMasterKeyID:
+                  - !Ref MyKey
+                SSEAlgorithm: aws:kms
+        VersioningConfiguration:
+          Status: Enabled
+        ReplicationConfiguration:
+          Role: 
+            - !Ref ReplicationRole
+          Rules:
+            - Status: Enabled
+              Prefix: ""
+              SourceSelectionCriteria:
+                SseKmsEncryptedObjects:
+                  Status: Enabled
+              Destination:
+                EncryptionConfiguration:
+                  ReplicaKmsKeyID: arn:aws:kms:us-east-2:AccountID:key/MyKeyOhioID
+                Bucket: arn:aws:s3:::my-test-bucket-ohio-replication
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: True
+          BlockPublicPolicy: False
+          IgnorePublicAcls: True
+          RestrictPublicBuckets: True
+        Tags:
+          - Key: Name
+            Value: my-test-bucket-virginia
+  
+  #S3 Bucket Policy for my-test-bucket-virginia
+  MyTestBucketVirginiaBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref MyTestBucketVirginia
+      PolicyDocument:
+        Statement:
+        - Sid: AllowSSLRequestsOnly
+          Action: s3:*
+          Effect: Deny
+          Resource:
+            - !Ref MyTestBucketVirginia
+            - !Ref MyTestBucketVirginia/*
+          Condition:
+            Bool:
+              aws:SecureTransport: 'false'
+          Principal: "*"
+        - Sid: PublicReadForGetBucketObjects
+          Effect: Allow
+          Principal:
+            AWS: arn:aws:iam::accountID:root
+          Action: "*"
+          Resource: 
+            - MyTestBucketVirginia
